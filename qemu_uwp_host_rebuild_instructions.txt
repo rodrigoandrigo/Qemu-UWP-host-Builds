@@ -1,0 +1,716 @@
+QEMU 11 UWP/Embedding/Host Display changes
+===========================================
+
+Workspace used
+--------------
+
+Root:
+  C:\path\to\qemu-11
+
+Main goal
+---------
+
+Adapt QEMU 11 so it can be built as shared libraries for an embedding/UWP
+host instead of only desktop executables, with:
+
+  - exported host embedding API;
+  - controlled lifecycle instead of process-owning main();
+  - callback-based log/video/audio paths;
+  - UWP-safe build options where possible;
+  - XAudio2 audio backend;
+  - host display backend for embedded framebuffer delivery;
+  - input injection for keyboard, mouse relative, mouse absolute and buttons;
+  - mouse event sync after queued pointer events;
+  - absolute mouse capture/selection support.
+
+Important constraint
+--------------------
+
+Do not add or use qemu_host_start_with_args.
+
+Older attempts with qemu_host_start_with_args were intentionally avoided.
+The supported start path is:
+
+  qemu_host_init(argc, argv)
+  qemu_host_start()
+
+or step mode:
+
+  qemu_host_init(argc, argv)
+  qemu_host_main_loop_step(...)
+
+
+1. Shared library build changes
+===============================
+
+Purpose
+-------
+
+Build these QEMU targets as shared libraries/DLLs instead of normal
+executables:
+
+  - qemu-system-*
+  - qemu-img
+  - qemu-io
+  - qemu-edid
+  - qemu-nbd
+  - qemu-storage-daemon
+
+Files changed
+-------------
+
+  meson.build
+  storage-daemon/meson.build
+
+Main behavior
+-------------
+
+The system emulators and selected tools are built through shared_library()
+with no "lib" prefix and a QEMU-style shared suffix.
+
+User-mode and fuzz targets were intentionally left as executables.
+
+
+2. Host embedding API
+=====================
+
+Purpose
+-------
+
+Expose a public API that lets an external host application initialize, start,
+step, stop, reset and clean up QEMU without having to use the normal desktop
+process/executable model.
+
+Files added/changed
+-------------------
+
+  include/qemu/qemu-host.h
+  system/host.c
+  util/qemu-host-log.c
+  util/error-report.c
+  system/runstate.c
+  include/system/system.h
+  system/meson.build
+  util/meson.build
+  meson.build
+
+Public API exported
+-------------------
+
+Lifecycle:
+
+  qemu_host_init
+  qemu_host_start
+  qemu_host_main_loop_step
+  qemu_host_request_shutdown
+  qemu_host_reset
+  qemu_host_join
+  qemu_host_cleanup
+
+State:
+
+  qemu_host_is_initialized
+  qemu_host_is_running
+  qemu_host_get_exit_status
+
+Callbacks:
+
+  qemu_host_register_log_callback
+  qemu_host_log_callback_enabled
+  qemu_host_emit_log
+
+  qemu_host_register_video_callback
+  qemu_host_emit_video_frame
+
+  qemu_host_register_audio_callback
+  qemu_host_emit_audio_frame
+
+Input:
+
+  qemu_host_send_key_number
+  qemu_host_send_key_qcode
+  qemu_host_send_pointer_rel
+  qemu_host_send_pointer_abs
+  qemu_host_send_pointer_button
+  qemu_host_capture_pointer_abs
+  qemu_host_pointer_is_absolute
+
+Main loop step support
+----------------------
+
+system/runstate.c gained:
+
+  qemu_main_loop_step(bool nonblocking, int *status)
+
+The old qemu_main_loop() now uses the step helper internally.
+
+Log routing
+-----------
+
+util/error-report.c now routes logs to the host log callback when one is
+registered. This avoids depending on a console/stderr path in the embedded
+host.
+
+
+3. UWP build option
+===================
+
+Purpose
+-------
+
+Add a build mode that avoids known desktop-only Win32 APIs for UWP/Xbox.
+
+Files changed
+-------------
+
+  meson_options.txt
+  meson.build
+  scripts/meson-buildoptions.sh
+
+Option added
+------------
+
+Meson:
+
+  -Duwp=true
+
+Configure wrapper:
+
+  --enable-uwp
+  --disable-uwp
+
+Rules
+-----
+
+  - UWP mode is only allowed when host_os == windows.
+  - CONFIG_UWP is set in config_host_data.
+  - DirectSound is rejected in UWP mode.
+  - WINMM is not linked in UWP mode.
+  - Summary prints "UWP mode".
+
+
+4. UWP coroutine fixes
+======================
+
+Purpose
+-------
+
+Avoid desktop-only fiber APIs in UWP.
+
+File changed
+------------
+
+  util/coroutine-windows.c
+
+Behavior
+--------
+
+When CONFIG_UWP is enabled, use:
+
+  CreateFiberEx
+  ConvertThreadToFiberEx
+
+instead of:
+
+  CreateFiber
+  ConvertThreadToFiber
+
+This avoids UWP load failures caused by desktop-only imports.
+
+
+5. UWP TAP/network fixes
+========================
+
+Purpose
+-------
+
+Prevent -Duwp=true from compiling POSIX TAP code or Win32 TAP code that uses
+registry/device APIs.
+
+Files changed
+-------------
+
+  net/meson.build
+  net/tap-stub.c
+
+Behavior
+--------
+
+When is_uwp is true:
+
+  - compile tap-stub.c only;
+  - do not compile net/tap.c;
+  - do not compile tap-win32.c;
+  - if the user tries -netdev tap, return a clean unsupported error.
+
+
+6. UWP block/chardev/os fixes
+=============================
+
+Block layer
+-----------
+
+Files changed:
+
+  block/meson.build
+  block/file-win32.c
+
+Behavior:
+
+  - win32-aio.c is not compiled in UWP mode.
+  - DeviceIoControl paths are avoided/stubbed in CONFIG_UWP.
+  - win32 AIO helpers are guarded out.
+  - harddisk getlength returns a clean error in UWP.
+  - sparse handling is a no-op in UWP.
+
+Chardev
+-------
+
+Files changed:
+
+  chardev/meson.build
+  chardev/char-serial.c
+  chardev/char-file.c
+  chardev/char-pipe.c
+  chardev/char-stdio.c
+
+Behavior:
+
+  - UWP does not compile char-win.c, char-win-stdio.c or char-console.c.
+  - UWP also does not fall into the POSIX branch that adds char-fd.c,
+    char-parallel.c and char-pty.c.
+  - serial/file/pipe/stdio chardevs in UWP inherit from TYPE_CHARDEV and
+    return clean unsupported errors instead of referencing TYPE_CHARDEV_WIN or
+    TYPE_CHARDEV_FD.
+
+This fixed the build error:
+
+  TYPE_CHARDEV_WIN undeclared in chardev/char-serial.c
+
+OS Win32 layer
+--------------
+
+File changed:
+
+  os-win32.c
+
+Behavior:
+
+  - no mmsystem.h in CONFIG_UWP;
+  - no SetConsoleCtrlHandler in CONFIG_UWP;
+  - no timeBeginPeriod/timeEndPeriod/timeGetDevCaps in CONFIG_UWP.
+
+
+7. XAudio2 audio backend
+========================
+
+Purpose
+-------
+
+Add an audio backend that works better for Windows/UWP than DirectSound.
+
+Files added/changed
+-------------------
+
+  audio/xaudio2audio.c
+  audio/meson.build
+  audio/audio.c
+  audio/audio_template.h
+  qapi/audio.json
+  meson_options.txt
+  meson.build
+  scripts/meson-buildoptions.sh
+
+Options added
+-------------
+
+Meson:
+
+  -Dxaudio2=enabled
+  -Dxaudio2=disabled
+  -Dxaudio2=auto
+
+Configure:
+
+  --enable-xaudio2
+  --disable-xaudio2
+
+audio_drv_list choices now include:
+
+  xaudio2
+
+QAPI
+----
+
+Added:
+
+  AudiodevDriver.xaudio2
+  Audiodev.xaudio2
+
+Usage:
+
+  -audiodev xaudio2,id=audio0
+
+Build/link behavior
+-------------------
+
+Desktop Windows:
+
+  links xaudio2_9
+
+UWP mode:
+
+  links WindowsApp
+
+Backend behavior
+----------------
+
+audio/xaudio2audio.c:
+
+  - creates IXAudio2 with XAudio2Create;
+  - creates IXAudio2MasteringVoice;
+  - creates IXAudio2SourceVoice for output;
+  - queues submitted audio buffers;
+  - frees submitted buffers through IXAudio2VoiceCallback;
+  - supports U8, S16, S32 and F32 output;
+  - supports volume/mute through IXAudio2SourceVoice_SetVolume and
+    IXAudio2SourceVoice_SetChannelVolumes;
+  - reports input/capture as unsupported because XAudio2 itself is output-only.
+
+
+8. Host display backend
+=======================
+
+Purpose
+-------
+
+Provide a display backend that sends framebuffer updates to the embedding host
+instead of opening SDL, GTK, Cocoa or Win32 desktop windows.
+
+Files added/changed
+-------------------
+
+  ui/host-display.c
+  ui/meson.build
+  qapi/ui.json
+
+Backend name
+------------
+
+  host
+
+Usage:
+
+  -display host
+
+QAPI
+----
+
+Added:
+
+  DisplayType.host
+  DisplayHost
+  DisplayOptions host branch
+
+Build
+-----
+
+ui/meson.build includes:
+
+  host-display.c
+
+Behavior
+--------
+
+ui/host-display.c registers a DisplayChangeListener and sends frames through:
+
+  qemu_host_emit_video_frame(...)
+
+Frame metadata sent:
+
+  - pixel pointer;
+  - width;
+  - height;
+  - stride/pitch;
+  - QemuHostPixelFormat.
+
+Supported pixel formats:
+
+  - BGRA8888
+  - BGRX8888
+  - RGBA8888
+  - RGBX8888
+
+Important behavior
+------------------
+
+The backend always registers a listener for console index 0 even when console 0
+is not graphical yet.
+
+Reason:
+
+Early VGA/BIOS boot can start with a text console and later switch to a
+graphical surface. Registering only already-graphical consoles can miss early
+or transitional output.
+
+Implementation:
+
+  host_display_register_console(qemu_console_lookup_by_index(0));
+
+Additional consoles are registered only when already graphical.
+
+
+9. Pointer input fixes and absolute mouse capture
+=================================================
+
+Purpose
+-------
+
+Make host-injected pointer events behave like official QEMU UI backends.
+
+Files changed
+-------------
+
+  system/host.c
+  include/qemu/qemu-host.h
+
+Fixes
+-----
+
+The following functions now call qemu_input_event_sync() after queueing input:
+
+  qemu_host_send_pointer_rel
+  qemu_host_send_pointer_abs
+  qemu_host_send_pointer_button
+
+Why:
+
+qemu_input_queue_rel/abs/btn only enqueue events. Official backends such as
+SDL, GTK, VNC, SPICE and D-Bus call qemu_input_event_sync() after queueing
+mouse movement/button events. Without sync, input can remain queued and not
+reach the guest reliably.
+
+Absolute mouse capture
+----------------------
+
+New public API:
+
+  qemu_host_capture_pointer_abs()
+
+Behavior:
+
+  - calls qmp_query_mice();
+  - finds the first absolute mouse;
+  - activates it with qemu_mouse_set(index, NULL);
+  - returns 0 on success;
+  - returns -ENODEV if no absolute mouse exists;
+  - returns -EINVAL if QEMU is not initialized/ready.
+
+qemu_host_send_pointer_abs() now calls the internal absolute capture helper
+before sending absolute coordinates. If no absolute mouse is available, it
+returns an error instead of queueing an absolute event with no handler.
+
+
+10. Recommended configure/build commands
+========================================
+
+Use MSYS2 UCRT64 or the same environment that provides cc/ninja/meson for the
+QEMU build.
+
+Example clean UWP/Xbox-oriented build:
+
+  cd /c/path/to/qemu-11
+
+  rm -rf build-uwp
+  mkdir build-uwp
+  cd build-uwp
+
+  ../configure \
+    --target-list=x86_64-softmmu \
+    --enable-uwp \
+    --enable-xaudio2 \
+    --audio-drv-list=xaudio2 \
+    --disable-dsound
+
+  ninja
+
+Post-build strip step:
+
+  strip --strip-unneeded *.dll
+
+If the DLLs are installed or copied to another output folder, run the same
+command in that folder, for example:
+
+  cd path/to/output
+  strip --strip-unneeded *.dll
+
+If you prefer Meson directly:
+
+  meson setup build-uwp \
+    -Duwp=true \
+    -Dxaudio2=enabled \
+    -Daudio_drv_list=xaudio2
+
+  ninja -C build-uwp
+
+Post-build strip step:
+
+  cd build-uwp
+  strip --strip-unneeded *.dll
+
+Recommended runtime arguments for embedding:
+
+  -display host
+  -audiodev xaudio2,id=audio0
+
+Example:
+
+  qemu-system-x86_64.dll \
+    -display host \
+    -audiodev xaudio2,id=audio0 \
+    ...
+
+
+11. How to use from the host application
+========================================
+
+Typical host sequence:
+
+  1. Register callbacks:
+
+       qemu_host_register_log_callback(...)
+       qemu_host_register_video_callback(...)
+       qemu_host_register_audio_callback(...)
+
+  2. Build argv including:
+
+       -display host
+       -audiodev xaudio2,id=audio0
+
+  3. Initialize:
+
+       qemu_host_init(argc, argv)
+
+  4. Start background QEMU loop:
+
+       qemu_host_start()
+
+     or run manually:
+
+       qemu_host_main_loop_step(...)
+
+  5. Send input:
+
+       qemu_host_send_key_qcode(...)
+       qemu_host_send_pointer_abs(...)
+       qemu_host_send_pointer_rel(...)
+       qemu_host_send_pointer_button(...)
+
+  6. For absolute mouse mode:
+
+       qemu_host_capture_pointer_abs()
+       qemu_host_send_pointer_abs(x, y, width, height)
+
+  7. Shutdown:
+
+       qemu_host_request_shutdown()
+       qemu_host_join(...)
+       qemu_host_cleanup()
+
+
+12. How to reapply everything in a clean QEMU 11 tree
+=====================================================
+
+High-level checklist
+--------------------
+
+1. Add include/qemu/qemu-host.h.
+2. Add system/host.c and wire it in system/meson.build.
+3. Add util/qemu-host-log.c and wire it in util/meson.build.
+4. Patch util/error-report.c to route logs to the host callback.
+5. Split qemu_main_loop() with qemu_main_loop_step() in system/runstate.c and
+   declare it in include/system/system.h.
+6. Patch meson.build/storage-daemon/meson.build to build selected QEMU targets
+   as shared libraries.
+7. Add meson option uwp and configure wrapper entries.
+8. Patch coroutine-windows.c for CreateFiberEx/ConvertThreadToFiberEx when
+   CONFIG_UWP is set.
+9. Patch net/meson.build and net/tap-stub.c so UWP never compiles POSIX TAP or
+   tap-win32.
+10. Patch block/file-win32.c and block/meson.build to avoid Win32 AIO and
+    DeviceIoControl paths in UWP.
+11. Patch os-win32.c to avoid WINMM/console control APIs in UWP.
+12. Patch chardev files and chardev/meson.build so UWP does not compile desktop
+    Win32 chardevs or POSIX chardevs.
+13. Add audio/xaudio2audio.c.
+14. Register xaudio2 in audio/meson.build, audio/audio.c,
+    audio/audio_template.h, qapi/audio.json, meson_options.txt, meson.build and
+    scripts/meson-buildoptions.sh.
+15. Add ui/host-display.c.
+16. Register host display in ui/meson.build and qapi/ui.json.
+17. Add pointer event sync and qemu_host_capture_pointer_abs() in system/host.c
+    and include/qemu/qemu-host.h.
+18. Reconfigure from a clean build directory and rebuild.
+
+
+13. Validation commands
+=======================
+
+QAPI schema validation:
+
+  python scripts/qapi-gen.py -o qapi-check-out qapi/qapi-schema.json
+
+Static searches:
+
+  rg -n "qemu_host_start_with_args" .
+
+Expected:
+
+  no results
+
+  rg -n "DISPLAY_TYPE_HOST|DisplayHost|host-display.c|qemu_host_emit_video_frame" ui qapi
+
+Expected:
+
+  host display entries in ui/host-display.c, ui/meson.build and qapi/ui.json
+
+  rg -n "qemu_host_capture_pointer_abs|qemu_input_event_sync" system/host.c include/qemu/qemu-host.h
+
+Expected:
+
+  exported capture API and sync calls after pointer queue operations
+
+Check DLL imports if LoadPackagedLibrary fails with ERROR_PROC_NOT_FOUND:
+
+  - inspect imported DLLs/functions;
+  - confirm no desktop-only APIs are imported in the UWP build;
+  - confirm coroutine-windows.c uses Ex fiber APIs in CONFIG_UWP;
+  - confirm DirectSound/WINMM/registry/TAP/console chardev paths are not linked.
+
+
+14. Known limitations / notes
+=============================
+
+1. XAudio2 is output-only.
+
+   The xaudio2 backend does not implement microphone capture. For capture,
+   another UWP-safe backend such as WASAPI capture would be needed.
+
+2. host-display sends framebuffer pointers valid for the callback duration.
+
+   The embedding app should copy the frame data if it needs to retain it after
+   the callback returns.
+
+3. qemu_host_capture_pointer_abs() selects a QEMU absolute mouse device.
+
+   It does not perform OS-level cursor capture. In UWP, OS-level pointer
+   capture remains the responsibility of the host app/view.
+
+4. A clean reconfigure is recommended after QAPI or Meson changes.
+
+   Do not rely only on incremental ninja after adding DisplayType or Audiodev
+   schema entries.
+
+5. Keep qemu_host_start_with_args absent.
+
+   This build intentionally uses the stable host API described above.
