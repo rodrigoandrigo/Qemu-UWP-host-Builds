@@ -10,6 +10,7 @@ Qemu-UWP-host_1.0.0.2_FIX1.msixbundle
 - `Y Button` closes the virtual keyboard.
 
 
+
 ## Dependence 
 
 Microsoft.VCLibs.x64.Debug.14.00.appx
@@ -39,6 +40,13 @@ qemu_uwp_host_rebuild_instructions.txt
 | X Button | Presses the selected virtual key |
 | Y Button | Closes the virtual keyboard |
 | Left Bumper + Right Bumper | Toggles mouse and keyboard capture, same as `Ctrl+Alt+M` |
+
+
+
+## Qemu-UWP-host_1.0.0.2_FIX1
+
+[![YouTube](https://img.youtube.com/vi/TbSgt6bOaEI/0.jpg)](https://www.youtube.com/watch?v=TbSgt6bOaEI)
+
 
 
 ## References
