@@ -1,6 +1,13 @@
-# Qemu-UWP-host-Builds
+## Qemu-UWP-host-Builds
 Builds, dependencies, and instructions
 
+Qemu-UWP-host_1.0.0.2_FIX1.msixbundle
+- In normal mode, with the virtual keyboard closed:
+- `X Button` = left mouse click.
+- `Y Button` = right mouse click.
+- With the virtual keyboard open, the behavior remains:
+- `X Button` presses the selected key.
+- `Y Button` closes the virtual keyboard.
 
 
 ## Dependence 
@@ -32,3 +39,8 @@ qemu_uwp_host_rebuild_instructions.txt
 | X Button | Presses the selected virtual key |
 | Y Button | Closes the virtual keyboard |
 | Left Bumper + Right Bumper | Toggles mouse and keyboard capture, same as `Ctrl+Alt+M` |
+
+
+## References
+
+https://github.com/rodrigoandrigo/Qemu-Libretro-UWP/tree/main
