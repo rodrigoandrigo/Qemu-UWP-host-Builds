@@ -25,6 +25,12 @@ qemu_uwp_host_rebuild_instructions.txt
 
 
 
+## Modified QEMU 11.0.2 files
+
+https://github.com/rodrigoandrigo/Qemu-Dll-shadps4
+
+
+
 ## Gamepad inputs (introduced in version 1.0.0.2)
 
 | Controller input | Action |
